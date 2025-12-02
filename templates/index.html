@@ -348,6 +348,114 @@
   .risk-medium { background-color: var(--accent-yellow); }
   .risk-high { background-color: var(--accent-red); }
 
+  /* Data Source Styles */
+  .data-source {
+    font-size: 0.75rem;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-top: 5px;
+    display: inline-block;
+  }
+
+  .data-source.binance {
+    background-color: rgba(63, 185, 80, 0.2);
+    color: var(--accent-green);
+  }
+
+  .data-source.kucoin {
+    background-color: rgba(88, 166, 255, 0.2);
+    color: var(--accent-blue);
+  }
+
+  .data-source.bybit {
+    background-color: rgba(240, 196, 66, 0.2);
+    color: var(--accent-yellow);
+  }
+
+  .data-source.mock {
+    background-color: rgba(248, 81, 73, 0.2);
+    color: var(--accent-red);
+  }
+
+  /* Trading Status Banner */
+  .trading-status-banner {
+    grid-column: 1 / -1;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 15px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .trading-status-banner.paused {
+    border-color: var(--accent-yellow);
+  }
+
+  .trading-status-banner.outside-hours {
+    border-color: var(--accent-blue);
+  }
+
+  .status-text {
+    display: flex;
+    align-items: center;
+    font-weight: 600;
+  }
+
+  .status-badge {
+    margin-left: 10px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
+
+  .status-badge.active {
+    background-color: rgba(63, 185, 80, 0.2);
+    color: var(--accent-green);
+  }
+
+  .status-badge.paused {
+    background-color: rgba(240, 196, 66, 0.2);
+    color: var(--accent-yellow);
+  }
+
+  .status-badge.stopped {
+    background-color: rgba(248, 81, 73, 0.2);
+    color: var(--accent-red);
+  }
+
+  .trading-hours {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 5px;
+  }
+
+  .control-buttons {
+    display: flex;
+    gap: 10px;
+  }
+
+  .btn-start, .btn-stop {
+    padding: 8px 15px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .btn-start {
+    background-color: var(--accent-green);
+    color: white;
+  }
+
+  .btn-stop {
+    background-color: var(--accent-red);
+    color: white;
+  }
+
   @media (max-width: 1200px) {
     .container {
       grid-template-columns: 1fr;
@@ -422,6 +530,15 @@
             <span>Position Size</span>
             <strong id="position-size">0 BTC</strong>
           </div>
+        </div>
+
+        <!-- Data Source Indicator -->
+        <div class="info-item">
+            <span>Data Source</span>
+            <div>
+                <strong id="data-source">--</strong>
+                <div id="data-source-indicator" class="data-source"></div>
+            </div>
         </div>
 
         <!-- Risk Management Panel -->
@@ -531,6 +648,19 @@
   <script>
     let chartInstance = null;
     let isStopped = false;
+
+    async function checkBackendHealth() {
+        try {
+            const response = await fetch('/health');
+            const data = await response.json();
+            console.log('Backend health:', data);
+            return true;
+        } catch (e) {
+            console.error('Backend health check failed:', e);
+            document.getElementById('action-msg').textContent = '⚠️ Backend connection failed';
+            return false;
+        }
+    }
 
     async function startTrading() {
       try {
@@ -682,6 +812,12 @@
           plugins: {
             legend: {
               labels: { color: '#c9d1d9', font: { size: 11 } }
+            },
+            title: {
+              display: true,
+              text: `Data Source: ${data.data_source || 'Unknown'}`,
+              color: '#c9d1d9',
+              font: { size: 12 }
             }
           },
           scales: {
@@ -700,16 +836,32 @@
 
     async function fetchAndUpdate() {
       try {
+        // First check if backend is responding
+        const isHealthy = await checkBackendHealth();
+        if (!isHealthy) {
+          return;
+        }
+
         const res = await fetch('/signal');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
         
         const data = await res.json();
+        console.log('Received data:', data);
 
-        document.getElementById('price').textContent = '$' + data.price.toFixed(2);
+        // Check for error response
+        if (data.error) {
+          document.getElementById('action-msg').textContent = `⚠️ ${data.error}`;
+          return;
+        }
+
+        // Update UI with received data
+        document.getElementById('price').textContent = '$' + (data.price || 0).toFixed(2);
 
         const signalDiv = document.getElementById('signal');
-        signalDiv.textContent = data.signal;
-        signalDiv.className = 'signal ' + data.signal.toLowerCase();
+        signalDiv.textContent = data.signal || 'No Signal';
+        signalDiv.className = 'signal ' + (data.signal || 'hold').toLowerCase();
 
         // Show pause reason if trading is paused
         let actionText = data.action;
@@ -717,10 +869,34 @@
           actionText = `⏸️ ${data.pause_reason}`;
         }
         
+        // Add data source info to action message
+        if (data.data_source && data.data_source !== "Binance") {
+          actionText += ` (Data: ${data.data_source})`;
+        }
+        
         document.getElementById('action-msg').textContent = actionText;
-        document.getElementById('balance').textContent = '₹' + data.balance.toLocaleString('en-IN', {maximumFractionDigits: 2});
+        document.getElementById('balance').textContent = '₹' + (data.balance || 0).toLocaleString('en-IN', {maximumFractionDigits: 2});
         document.getElementById('position').textContent = data.position_type ? data.position_type : 'NONE';
         document.getElementById('position-size').textContent = data.position_size ? data.position_size.toFixed(6) + ' BTC' : '0 BTC';
+
+        // Update Data Source
+        const dataSourceElement = document.getElementById('data-source');
+        const dataSourceIndicator = document.getElementById('data-source-indicator');
+        
+        if (data.data_source) {
+          dataSourceElement.textContent = data.data_source;
+          dataSourceIndicator.textContent = data.data_source === 'Mock' ? 'DEMO MODE' : 'LIVE';
+          
+          // Set appropriate class based on data source
+          dataSourceIndicator.className = 'data-source';
+          if (data.data_source) {
+            dataSourceIndicator.classList.add(data.data_source.toLowerCase());
+          }
+        } else {
+          dataSourceElement.textContent = 'Unknown';
+          dataSourceIndicator.textContent = 'UNKNOWN';
+          dataSourceIndicator.className = 'data-source';
+        }
 
         // Update Stop-Loss
         const slSpan = document.getElementById('stop-loss');
@@ -799,6 +975,9 @@
 
       } catch (e) {
         console.error("Error fetching data:", e);
+        document.getElementById('action-msg').textContent = `⚠️ Error: ${e.message}`;
+        document.getElementById('price').textContent = '$Error';
+        document.getElementById('signal').textContent = 'Error';
       }
     }
 
