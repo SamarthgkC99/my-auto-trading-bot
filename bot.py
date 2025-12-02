@@ -2,7 +2,7 @@
 
 import os
 from flask import Flask, jsonify, render_template, request
-from utbot_logic import get_utbot_signal, fetch_btc_data, calc_utbot
+from utbot_logic import get_utbot_signal, fetch_btc_data, calc_utbot, determine_data_source
 from demo_trader import (
     update_demo_trade, 
     get_trade_history,
@@ -18,7 +18,10 @@ import logging
 from pytz import timezone
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -103,32 +106,77 @@ def index():
         logger.error(f"Error rendering index: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring"""
+    return jsonify({
+        "status": "healthy", 
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0"
+    })
+
+@app.route('/test')
+def test_endpoint():
+    """Test endpoint to verify backend is working"""
+    try:
+        from utbot_logic import get_current_price
+        price = get_current_price()
+        
+        return jsonify({
+            "status": "working",
+            "price": price,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Test endpoint error: {e}")
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
 @app.route('/signal', methods=['GET'])
 def signal():
+    """Main signal endpoint"""
     try:
+        logger.info("Processing /signal request")
         allowed, reason = is_trading_allowed()
+        logger.info(f"Trading allowed: {allowed}, reason: {reason}")
         
         signal_data = get_utbot_signal()
+        logger.info(f"Signal data received: {signal_data}")
         
         signal_generated = signal_data.get("signal", "Hold")
         price = signal_data.get("price", 0)
         atr = signal_data.get("atr", 0)
         utbot_stop = signal_data.get("utbot_stop", price)
+        data_source = signal_data.get("data_source", "Unknown")
 
         if signal_generated == "No Data" or price == 0:
+            logger.error("Could not generate signal - No Data or Price = 0")
             return jsonify({"error": "Could not generate signal"}), 500
 
-        if not allowed:
+        # Load trade data safely
+        try:
             all_data = load_trades()
+        except Exception as e:
+            logger.error(f"Error loading trades: {e}")
+            all_data = {"balance": 10000, "open_trade": None, "history": []}
+
+        if not allowed:
             current_open_trade = all_data.get("open_trade")
             live_pl_inr = calculate_live_pl(current_open_trade, price)
             
-            risk_status = get_risk_status()
+            try:
+                risk_status = get_risk_status()
+            except Exception as e:
+                logger.error(f"Error getting risk status: {e}")
+                risk_status = {"daily_stats": {"trades": "0/20", "loss": "₹0/₹1000"}}
             
             response_data = {
                 "price": price,
                 "signal": "Hold",
-                "balance": all_data["balance"],
+                "balance": all_data.get("balance", 10000),
                 "holding": current_open_trade is not None,
                 "position_type": current_open_trade["type"] if current_open_trade else None,
                 "action": f"⏸️ PAUSED: {reason}",
@@ -142,6 +190,7 @@ def signal():
                 "risk_status": risk_status,
                 "trading_allowed": False,
                 "pause_reason": reason,
+                "data_source": data_source,
                 "strategy_info": {
                     "buy_strategy": "UT Bot #2 (KV=2, ATR=300)",
                     "sell_strategy": "UT Bot #1 (KV=2, ATR=1)"
@@ -177,6 +226,7 @@ def signal():
             "risk_status": risk_status,
             "trading_allowed": True,
             "pause_reason": None,
+            "data_source": data_source,
             "strategy_info": {
                 "buy_strategy": "UT Bot #2 (KV=2, ATR=300)",
                 "sell_strategy": "UT Bot #1 (KV=2, ATR=1)"
@@ -229,7 +279,8 @@ def chart_data():
         return jsonify({
             "candles": candles,
             "stop_line": stop_line,
-            "atr_line": atr_line
+            "atr_line": atr_line,
+            "data_source": determine_data_source(df)
         })
 
     except Exception as e:
