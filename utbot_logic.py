@@ -1,4 +1,4 @@
-# utbot_logic.py - Complete with Working Alternative Data Sources
+# utbot_logic.py - Skip Binance, Use Working Data Sources
 
 import pandas as pd
 import requests
@@ -16,207 +16,52 @@ HEADERS = {
 }
 
 def fetch_btc_data():
-    """Fetches the latest 5-minute Kline data for BTCUSDT from multiple sources."""
-    # Try multiple data sources in order of preference
+    """Fetches latest 5-minute Kline data for BTCUSDT from working sources only."""
+    # Skip Binance entirely - it's blocked on Render
     sources = [
-        fetch_from_binance,
-        fetch_from_kucoin,
-        fetch_from_bybit,
-        fetch_from_coinbase,
+        fetch_from_coinbase,  # Try Coinbase first (most reliable)
+        fetch_from_kucoin,   # Then KuCoin
+        fetch_from_bybit,     # Then Bybit
         fetch_from_mock_data  # Last resort fallback
     ]
     
     for source_func in sources:
         try:
+            logger.info(f"Attempting to fetch from {source_func.__name__}")
             df = source_func()
-            if not df.empty:
-                logger.info(f"Successfully fetched data from {source_func.__name__}")
+            if not df.empty and len(df) > 0:
+                logger.info(f"Successfully fetched {len(df)} candles from {source_func.__name__}")
                 return df
+            else:
+                logger.warning(f"Empty data from {source_func.__name__}")
         except Exception as e:
-            logger.warning(f"Failed to fetch from {source_func.__name__}: {e}")
+            logger.error(f"Failed to fetch from {source_func.__name__}: {e}")
             continue
     
-    logger.error("All data sources failed, using mock data")
+    logger.error("All sources failed, generating emergency mock data")
     return fetch_from_mock_data()
 
-def fetch_from_binance():
-    """Fetch data from Binance with retry logic."""
-    max_retries = 2  # Reduce retries since it's being blocked
-    base_delay = 2  # seconds
-    
-    for attempt in range(max_retries):
-        try:
-            # Add jitter to avoid detection
-            delay = base_delay * (1 + random.random())
-            
-            logger.info(f"Fetching BTC data from Binance (attempt {attempt + 1}/{max_retries})")
-            url = "https://api.binance.com/api/v3/klines"
-            params = {"symbol": "BTCUSDT", "interval": "5m", "limit": 350}
-            
-            response = requests.get(
-                url, 
-                params=params, 
-                headers=HEADERS,
-                timeout=10
-            )
-            
-            # Check for specific error codes
-            if response.status_code == 451:
-                logger.error("Binance blocking requests (451 error)")
-                raise Exception("Binance unavailable for legal reasons")
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data:
-                logger.error("Empty data received from Binance")
-                raise Exception("Empty data")
-            
-            df = pd.DataFrame(data, columns=[
-                "time", "open", "high", "low", "close", "volume", 
-                "c", "q", "n", "t", "v", "ignore"
-            ])
-            for col in ["close", "high", "low", "open"]:
-                df[col] = df[col].astype(float)
-            
-            return df
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error fetching from Binance (attempt {attempt + 1}): {e}")
-        except Exception as e:
-            logger.error(f"Error processing Binance data (attempt {attempt + 1}): {e}")
-        
-        if attempt < max_retries - 1:
-            logger.info(f"Retrying in {delay:.2f} seconds...")
-            time.sleep(delay)
-    
-    raise Exception("Failed to fetch data from Binance after all retries")
-
-def fetch_from_kucoin():
-    """Alternative data source: KuCoin API with correct endpoint."""
-    try:
-        logger.info("Fetching data from KuCoin")
-        # Use the correct KuCoin endpoint
-        url = "https://api.kucoin.com/api/v1/market/candles"
-        params = {
-            "symbol": "BTC-USDT",
-            "type": "5min",  # Correct type for KuCoin
-            "startAt": int((time.time() - 350 * 5 * 60) * 1000),  # 350 candles ago
-            "endAt": int(time.time() * 1000)
-        }
-        
-        response = requests.get(
-            url, 
-            params=params, 
-            headers=HEADERS,
-            timeout=10
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        if data.get("code") != "200000" or not data.get("data"):
-            raise Exception(f"KuCoin API error: {data.get('msg', 'Unknown error')}")
-        
-        # KuCoin returns data in reverse order (newest first)
-        klines = data["data"]
-        klines.reverse()  # Reverse to get oldest first
-        
-        df_data = []
-        for kline in klines:
-            df_data.append([
-                kline[0],  # time
-                kline[1],  # open
-                kline[3],  # high
-                kline[4],  # low
-                kline[2],  # close
-                kline[5],  # volume
-                "", "", "", "", "", ""
-            ])
-        
-        df = pd.DataFrame(df_data, columns=[
-            "time", "open", "high", "low", "close", "volume", 
-            "c", "q", "n", "t", "v", "ignore"
-        ])
-        
-        for col in ["close", "high", "low", "open"]:
-            df[col] = df[col].astype(float)
-        
-        return df
-        
-    except Exception as e:
-        logger.error(f"Error fetching from KuCoin: {e}")
-        raise Exception(f"KuCoin API error: {str(e)}")
-
-def fetch_from_bybit():
-    """Alternative data source: Bybit API."""
-    try:
-        logger.info("Fetching data from Bybit")
-        url = "https://api.bybit.com/v5/market/kline"
-        params = {
-            "category": "spot",  # Use spot instead of linear
-            "symbol": "BTCUSDT",
-            "interval": "5",  # 5 minutes
-            "limit": 200  # Bybit limit
-        }
-        
-        response = requests.get(
-            url, 
-            params=params, 
-            headers=HEADERS,
-            timeout=10
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        if data.get("retCode") != 0 or not data.get("result", {}).get("list"):
-            raise Exception(f"Bybit API error: {data.get('retMsg', 'Unknown error')}")
-        
-        # Bybit returns data in reverse order (newest first)
-        klines = data["result"]["list"]
-        klines.reverse()  # Reverse to get oldest first
-        
-        df_data = []
-        for kline in klines:
-            df_data.append([
-                kline[0],  # time
-                kline[1],  # open
-                kline[2],  # high
-                kline[3],  # low
-                kline[4],  # close
-                kline[5],  # volume
-                "", "", "", "", "", ""
-            ])
-        
-        df = pd.DataFrame(df_data, columns=[
-            "time", "open", "high", "low", "close", "volume", 
-            "c", "q", "n", "t", "v", "ignore"
-        ])
-        
-        for col in ["close", "high", "low", "open"]:
-            df[col] = df[col].astype(float)
-        
-        return df
-        
-    except Exception as e:
-        logger.error(f"Error fetching from Bybit: {e}")
-        raise Exception(f"Bybit API error: {str(e)}")
-
 def fetch_from_coinbase():
-    """Alternative data source: Coinbase Pro API."""
+    """Fetch data from Coinbase Pro API - Primary source."""
     try:
         logger.info("Fetching data from Coinbase")
         url = "https://api.pro.coinbase.com/products/BTC-USD/candles"
+        
+        # Calculate time range for last ~300 candles (Coinbase limit is 300)
+        end_time = int(time.time())
+        start_time = end_time - 300 * 5 * 60  # 300 candles of 5 minutes each
+        
         params = {
             "granularity": 300,  # 5 minutes in seconds
-            "start": ISOString((time.time() - 350 * 5 * 60)),  # 350 candles ago
-            "end": ISOString(time.time())
+            "start": ISOString(start_time),
+            "end": ISOString(end_time)
         }
         
         response = requests.get(
             url, 
             params=params, 
             headers=HEADERS,
-            timeout=10
+            timeout=15
         )
         response.raise_for_status()
         
@@ -245,34 +90,144 @@ def fetch_from_coinbase():
         for col in ["close", "high", "low", "open"]:
             df[col] = df[col].astype(float)
         
+        logger.info(f"Coinbase: Fetched {len(df)} candles")
         return df
         
     except Exception as e:
         logger.error(f"Error fetching from Coinbase: {e}")
         raise Exception(f"Coinbase API error: {str(e)}")
 
-def ISOString(seconds):
-    """Convert seconds to ISO string for Coinbase API"""
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00', 'Z')
+def fetch_from_kucoin():
+    """Fetch data from KuCoin API."""
+    try:
+        logger.info("Fetching data from KuCoin")
+        url = "https://api.kucoin.com/api/v1/market/candles"
+        
+        # Calculate time range
+        end_time = int(time.time() * 1000)
+        start_time = end_time - 350 * 5 * 60 * 1000  # 350 candles of 5 minutes
+        
+        params = {
+            "symbol": "BTC-USDT",
+            "type": "5min",
+            "startAt": start_time,
+            "endAt": end_time
+        }
+        
+        response = requests.get(
+            url, 
+            params=params, 
+            headers=HEADERS,
+            timeout=15
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        if data.get("code") != "200000" or not data.get("data"):
+            raise Exception(f"KuCoin API error: {data.get('msg', 'Unknown error')}")
+        
+        # KuCoin returns data in reverse order (newest first)
+        klines = data["data"]
+        if not klines:
+            raise Exception("No candle data from KuCoin")
+            
+        klines.reverse()  # Reverse to get oldest first
+        
+        df_data = []
+        for kline in klines:
+            df_data.append([
+                kline[0],  # time
+                kline[1],  # open
+                kline[3],  # high
+                kline[4],  # low
+                kline[2],  # close
+                kline[5],  # volume
+                "", "", "", "", "", ""
+            ])
+        
+        df = pd.DataFrame(df_data, columns=[
+            "time", "open", "high", "low", "close", "volume", 
+            "c", "q", "n", "t", "v", "ignore"
+        ])
+        
+        for col in ["close", "high", "low", "open"]:
+            df[col] = df[col].astype(float)
+        
+        logger.info(f"KuCoin: Fetched {len(df)} candles")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error fetching from KuCoin: {e}")
+        raise Exception(f"KuCoin API error: {str(e)}")
+
+def fetch_from_bybit():
+    """Fetch data from Bybit API."""
+    try:
+        logger.info("Fetching data from Bybit")
+        url = "https://api.bybit.com/v5/market/kline"
+        params = {
+            "category": "spot",
+            "symbol": "BTCUSDT",
+            "interval": "5",
+            "limit": 200  # Bybit limit
+        }
+        
+        response = requests.get(
+            url, 
+            params=params, 
+            headers=HEADERS,
+            timeout=15
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        if data.get("retCode") != 0 or not data.get("result", {}).get("list"):
+            raise Exception(f"Bybit API error: {data.get('retMsg', 'Unknown error')}")
+        
+        # Bybit returns data in reverse order (newest first)
+        klines = data["result"]["list"]
+        if not klines:
+            raise Exception("No candle data from Bybit")
+            
+        klines.reverse()  # Reverse to get oldest first
+        
+        df_data = []
+        for kline in klines:
+            df_data.append([
+                kline[0],  # time
+                kline[1],  # open
+                kline[2],  # high
+                kline[3],  # low
+                kline[4],  # close
+                kline[5],  # volume
+                "", "", "", "", "", ""
+            ])
+        
+        df = pd.DataFrame(df_data, columns=[
+            "time", "open", "high", "low", "close", "volume", 
+            "c", "q", "n", "t", "v", "ignore"
+        ])
+        
+        for col in ["close", "high", "low", "open"]:
+            df[col] = df[col].astype(float)
+        
+        logger.info(f"Bybit: Fetched {len(df)} candles")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error fetching from Bybit: {e}")
+        raise Exception(f"Bybit API error: {str(e)}")
 
 def fetch_from_mock_data():
     """Generate realistic mock data as a last resort."""
-    logger.warning("Using mock data as fallback")
+    logger.warning("Generating mock data as fallback")
     
     # Generate mock candlestick data
     now = int(time.time() * 1000)
     df_data = []
     
     # Get a realistic base price
-    try:
-        # Try to get current price from a simple API
-        response = requests.get("https://api.coindesk.com/v1/bpi/currentprice.json", timeout=5)
-        data = response.json()
-        base_price = float(data["bpi"]["USD"]["rate_float"])
-    except:
-        base_price = 43000.0  # Fallback price
-    
+    base_price = 43000.0
     price = base_price
     
     # Generate 350 candles (5-minute intervals)
@@ -280,12 +235,12 @@ def fetch_from_mock_data():
         timestamp = now - (350 - i) * 5 * 60 * 1000  # 5 minutes in milliseconds
         
         # Random walk for price with momentum
-        change = (random.random() - 0.5) * 300  # Random change between -150 and +150
+        change = (random.random() - 0.5) * 200  # Random change between -100 and +100
         price += change
         
         # Generate realistic OHLC
         open_price = price
-        volatility = random.uniform(0.002, 0.008)  # 0.2% to 0.8% volatility
+        volatility = random.uniform(0.001, 0.005)  # 0.1% to 0.5% volatility
         
         high_price = open_price * (1 + random.uniform(0, volatility))
         low_price = open_price * (1 - random.uniform(0, volatility))
@@ -294,7 +249,7 @@ def fetch_from_mock_data():
         close_price = low_price + random.random() * (high_price - low_price)
         
         # Realistic volume
-        volume = random.uniform(50, 500) * (1 + abs(change) / 100)
+        volume = random.uniform(100, 1000)
         
         df_data.append([
             timestamp, 
@@ -316,14 +271,14 @@ def fetch_from_mock_data():
     for col in ["close", "high", "low", "open"]:
         df[col] = df[col].astype(float)
     
+    logger.info(f"Mock: Generated {len(df)} candles")
     return df
 
 def get_current_price():
-    """Fetches only the current price for BTCUSDT from multiple sources."""
-    # Try multiple sources in order
+    """Fetches only the current price from working sources."""
     sources = [
-        get_price_from_coindesk,
         get_price_from_coinbase,
+        get_price_from_coindesk,
         get_price_from_kucoin,
         get_price_from_bybit,
         get_mock_price  # Last resort
@@ -342,21 +297,6 @@ def get_current_price():
     logger.error("All price sources failed")
     return get_mock_price()
 
-def get_price_from_coindesk():
-    """Fetch current price from CoinDesk API."""
-    try:
-        logger.info("Fetching current price from CoinDesk")
-        url = "https://api.coindesk.com/v1/bpi/currentprice.json"
-        
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return float(data["bpi"]["USD"]["rate_float"])
-        
-    except Exception as e:
-        logger.error(f"Error fetching price from CoinDesk: {e}")
-        raise Exception(f"CoinDesk price error: {str(e)}")
-
 def get_price_from_coinbase():
     """Fetch current price from Coinbase."""
     try:
@@ -371,6 +311,21 @@ def get_price_from_coinbase():
     except Exception as e:
         logger.error(f"Error fetching price from Coinbase: {e}")
         raise Exception(f"Coinbase price error: {str(e)}")
+
+def get_price_from_coindesk():
+    """Fetch current price from CoinDesk API."""
+    try:
+        logger.info("Fetching current price from CoinDesk")
+        url = "https://api.coindesk.com/v1/bpi/currentprice.json"
+        
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return float(data["bpi"]["USD"]["rate_float"])
+        
+    except Exception as e:
+        logger.error(f"Error fetching price from CoinDesk: {e}")
+        raise Exception(f"CoinDesk price error: {str(e)}")
 
 def get_price_from_kucoin():
     """Fetch current price from KuCoin."""
@@ -430,6 +385,11 @@ def get_mock_price():
     logger.warning("Using mock price as fallback")
     return 43000.0 + random.random() * 2000  # Random price around $43,000-$45,000
 
+def ISOString(seconds):
+    """Convert seconds to ISO string for Coinbase API"""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00', 'Z')
+
 def calc_utbot(df, keyvalue, atr_period):
     """Calculates the UT Bot trailing stop and signals."""
     if df.empty:
@@ -479,7 +439,7 @@ def calculate_atr_stable(df, period=14):
     return df["atr"].iloc[-1] if not df["atr"].isna().all() else None
 
 def get_utbot_signal():
-    """Generates the final UT Bot signal with ATR and stop values"""
+    """Generates final UT Bot signal with ATR and stop values"""
     logger.info("Generating UT Bot signal...")
     
     df = fetch_btc_data()
@@ -515,7 +475,6 @@ def get_utbot_signal():
         logger.info(f"Price: ${latest_price:.2f}, ATR: ${atr_stable:.2f}")
 
         utbot_stop = None
-        data_source = "Unknown"
 
         if signal2 == 1:
             latest_signal = "Buy"
@@ -554,22 +513,18 @@ def get_utbot_signal():
         }
 
 def determine_data_source(df):
-    """Try to determine the data source based on the data characteristics."""
+    """Try to determine the data source based on data characteristics."""
     if df.empty:
         return "None"
     
-    # This is a simple heuristic - in a real implementation, you might
-    # store the source with the data or use more sophisticated detection
     try:
-        # Check if the data looks like it came from Binance
-        if len(df) == 350 and df["time"].iloc[0] % 300000 == 0:  # 5-minute intervals
-            return "Binance"
-        elif len(df) == 200:  # Bybit limit
-            return "Bybit"
-        elif len(df) == 350:  # KuCoin limit
-            return "KuCoin"
-        elif len(df) == 350:  # Coinbase limit
+        # Check data characteristics to identify source
+        if len(df) <= 300:
             return "Coinbase"
+        elif len(df) == 200:
+            return "Bybit"
+        elif len(df) == 350:
+            return "KuCoin"
         else:
             return "Mock"
     except:
