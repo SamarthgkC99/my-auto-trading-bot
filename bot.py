@@ -1,9 +1,9 @@
-# bot.py - Complete with Trading Hours + Pause/Resume
+# bot.py - Complete with Trading Hours + Pause/Resume (Render persistent storage)
 
 from flask import Flask, jsonify, render_template, request
 from utbot_logic import get_utbot_signal, fetch_btc_data, calc_utbot
 from demo_trader import (
-    update_demo_trade, 
+    update_demo_trade,
     get_trade_history,
     get_order_log,
     load_trades,
@@ -17,9 +17,12 @@ import os
 
 app = Flask(__name__)
 
-# Global trading state file
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-TRADING_STATE_FILE = os.path.join(SCRIPT_DIR, "trading_state.json")
+# Use Render persistent storage
+DATA_DIR = "/data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Global trading state file (persisted)
+TRADING_STATE_FILE = os.path.join(DATA_DIR, "trading_state.json")
 
 # Default trading hours: 6 PM (18:00) to 11 PM (23:00)
 DEFAULT_TRADING_HOURS = {
@@ -34,7 +37,7 @@ def load_trading_state():
     if not os.path.exists(TRADING_STATE_FILE):
         save_trading_state(DEFAULT_TRADING_HOURS)
         return DEFAULT_TRADING_HOURS
-    
+
     with open(TRADING_STATE_FILE, "r") as f:
         return json.load(f)
 
@@ -46,29 +49,29 @@ def save_trading_state(state):
 def is_within_trading_hours():
     """Check if current time is within allowed trading hours"""
     state = load_trading_state()
-    
+
     if not state.get("enabled", True):
         return True
-    
+
     current_hour = datetime.now().hour
     start_hour = state.get("start_hour", 18)
     end_hour = state.get("end_hour", 23)
-    
+
     return start_hour <= current_hour < end_hour
 
 def is_trading_allowed():
     """Check if trading is allowed (hours + manual pause)"""
     state = load_trading_state()
-    
+
     if state.get("manual_pause", False):
         return False, "Trading manually paused"
-    
+
     if not is_within_trading_hours():
         current_hour = datetime.now().hour
         start_hour = state.get("start_hour", 18)
         end_hour = state.get("end_hour", 23)
         return False, f"Outside trading hours ({start_hour}:00 - {end_hour}:00). Current: {current_hour}:00"
-    
+
     return True, None
 
 @app.route('/')
@@ -79,9 +82,9 @@ def index():
 def signal():
     try:
         allowed, reason = is_trading_allowed()
-        
+
         signal_data = get_utbot_signal()
-        
+
         signal_generated = signal_data.get("signal", "Hold")
         price = signal_data.get("price", 0)
         atr = signal_data.get("atr", 0)
@@ -94,9 +97,9 @@ def signal():
             all_data = load_trades()
             current_open_trade = all_data.get("open_trade")
             live_pl_inr = calculate_live_pl(current_open_trade, price)
-            
+
             risk_status = get_risk_status()
-            
+
             response_data = {
                 "price": price,
                 "signal": "Hold",
@@ -119,19 +122,19 @@ def signal():
                     "sell_strategy": "UT Bot #1 (KV=2, ATR=1)"
                 }
             }
-            
+
             return jsonify(response_data)
 
         general_status, last_closed_trade, latest_log_entry = update_demo_trade(
             signal_generated, price, atr, utbot_stop
         )
-        
+
         all_data = load_trades()
         current_open_trade = all_data.get("open_trade")
         live_pl_inr = calculate_live_pl(current_open_trade, price)
-        
+
         risk_status = get_risk_status()
-        
+
         response_data = {
             "price": price,
             "signal": signal_generated,
@@ -172,7 +175,7 @@ def chart_data():
             return jsonify({"error": "No data"}), 500
 
         df1 = calc_utbot(df.copy(), 2, 1)
-        
+
         candles = []
         for idx, row in df.iterrows():
             candles.append({
@@ -182,14 +185,14 @@ def chart_data():
                 "low": float(row['low']),
                 "close": float(row['close']),
             })
-        
+
         stop_line = []
         for idx, row in df1.iterrows():
             stop_line.append({
                 "time": int(row['time']) // 1000,
                 "value": float(row['stop'])
             })
-        
+
         atr_line = []
         for idx, row in df1.iterrows():
             if pd.notna(row['atr']):
@@ -197,7 +200,7 @@ def chart_data():
                     "time": int(row['time']) // 1000,
                     "value": float(row['close']) - float(row['atr'])
                 })
-        
+
         return jsonify({
             "candles": candles,
             "stop_line": stop_line,
@@ -226,17 +229,17 @@ def status():
     try:
         data = load_trades()
         current_open_trade = data.get("open_trade")
-        
+
         from utbot_logic import get_current_price
         current_price = get_current_price()
-        
+
         if current_price:
             live_pl_inr = calculate_live_pl(current_open_trade, current_price)
         else:
             live_pl_inr = None
-        
+
         risk_status = get_risk_status()
-        
+
         status_data = {
             "balance": round(data["balance"], 2),
             "has_open_trade": current_open_trade is not None,
@@ -247,9 +250,9 @@ def status():
             "total_trades": len(data.get("history", [])),
             "risk_status": risk_status
         }
-        
+
         return jsonify(status_data)
-    
+
     except Exception as e:
         print(f"Error in /status route: {e}")
         import traceback
@@ -262,7 +265,7 @@ def risk_config():
     if request.method == 'GET':
         config = load_risk_config()
         return jsonify(config)
-    
+
     elif request.method == 'POST':
         try:
             new_config = request.json
@@ -287,30 +290,30 @@ def trading_control():
     if request.method == 'GET':
         state = load_trading_state()
         allowed, reason = is_trading_allowed()
-        
+
         return jsonify({
             "state": state,
             "trading_allowed": allowed,
             "pause_reason": reason,
             "current_time": datetime.now().strftime("%H:%M:%S")
         })
-    
+
     elif request.method == 'POST':
         try:
             action = request.json.get("action")
-            
+
             if action == "pause":
                 state = load_trading_state()
                 state["manual_pause"] = True
                 save_trading_state(state)
                 return jsonify({"success": True, "message": "Trading paused manually"})
-            
+
             elif action == "resume":
                 state = load_trading_state()
                 state["manual_pause"] = False
                 save_trading_state(state)
                 return jsonify({"success": True, "message": "Trading resumed"})
-            
+
             elif action == "update_hours":
                 state = load_trading_state()
                 state["start_hour"] = request.json.get("start_hour", 18)
@@ -318,10 +321,10 @@ def trading_control():
                 state["enabled"] = request.json.get("enabled", True)
                 save_trading_state(state)
                 return jsonify({"success": True, "message": "Trading hours updated"})
-            
+
             else:
                 return jsonify({"success": False, "error": "Invalid action"}), 400
-                
+
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 400
 
@@ -335,18 +338,18 @@ if __name__ == '__main__':
     print("📉 Risk Status: /risk-status")
     print("⏯️  Trading Control: /trading-control")
     print("="*60)
-    
+
     state = load_trading_state()
     if state.get("enabled", True):
         print(f"⏰ Trading Hours: {state.get('start_hour', 18)}:00 - {state.get('end_hour', 23)}:00")
     else:
         print("⏰ Trading Hours: Disabled (24/7 trading)")
-    
+
     if state.get("manual_pause", False):
         print("⏸️  Status: PAUSED")
     else:
         print("▶️  Status: ACTIVE")
-    
+
     print("="*60 + "\n")
-    
+
     app.run(host='0.0.0.0', port=5000, debug=True)
