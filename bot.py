@@ -1,5 +1,6 @@
 # bot.py - Complete with Trading Hours + Pause/Resume
 
+import os
 from flask import Flask, jsonify, render_template, request
 from utbot_logic import get_utbot_signal, fetch_btc_data, calc_utbot
 from demo_trader import (
@@ -13,7 +14,12 @@ from risk_manager import get_risk_status, load_risk_config, save_risk_config
 import pandas as pd
 from datetime import datetime
 import json
-import os
+import logging
+from pytz import timezone
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -21,7 +27,7 @@ app = Flask(__name__)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TRADING_STATE_FILE = os.path.join(SCRIPT_DIR, "trading_state.json")
 
-# Default trading hours: 6 PM (18:00) to 11 PM (23:00)
+# Default trading hours: 6 PM (18:00) to 11 PM (23:00) UTC
 DEFAULT_TRADING_HOURS = {
     "enabled": True,
     "start_hour": 18,
@@ -31,49 +37,71 @@ DEFAULT_TRADING_HOURS = {
 
 def load_trading_state():
     """Load trading state (pause/resume, hours)"""
-    if not os.path.exists(TRADING_STATE_FILE):
-        save_trading_state(DEFAULT_TRADING_HOURS)
+    try:
+        if not os.path.exists(TRADING_STATE_FILE):
+            save_trading_state(DEFAULT_TRADING_HOURS)
+            return DEFAULT_TRADING_HOURS
+        
+        with open(TRADING_STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading trading state: {e}")
         return DEFAULT_TRADING_HOURS
-    
-    with open(TRADING_STATE_FILE, "r") as f:
-        return json.load(f)
 
 def save_trading_state(state):
     """Save trading state"""
-    with open(TRADING_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=4)
+    try:
+        with open(TRADING_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving trading state: {e}")
 
 def is_within_trading_hours():
-    """Check if current time is within allowed trading hours"""
-    state = load_trading_state()
-    
-    if not state.get("enabled", True):
-        return True
-    
-    current_hour = datetime.now().hour
-    start_hour = state.get("start_hour", 18)
-    end_hour = state.get("end_hour", 23)
-    
-    return start_hour <= current_hour < end_hour
+    """Check if current time is within allowed trading hours (UTC)"""
+    try:
+        state = load_trading_state()
+        
+        if not state.get("enabled", True):
+            return True
+        
+        # Use UTC time for consistency
+        now = datetime.now(timezone('UTC'))
+        current_hour = now.hour
+        start_hour = state.get("start_hour", 18)
+        end_hour = state.get("end_hour", 23)
+        
+        return start_hour <= current_hour < end_hour
+    except Exception as e:
+        logger.error(f"Error checking trading hours: {e}")
+        return True  # Default to allowing trading if there's an error
 
 def is_trading_allowed():
     """Check if trading is allowed (hours + manual pause)"""
-    state = load_trading_state()
-    
-    if state.get("manual_pause", False):
-        return False, "Trading manually paused"
-    
-    if not is_within_trading_hours():
-        current_hour = datetime.now().hour
-        start_hour = state.get("start_hour", 18)
-        end_hour = state.get("end_hour", 23)
-        return False, f"Outside trading hours ({start_hour}:00 - {end_hour}:00). Current: {current_hour}:00"
-    
-    return True, None
+    try:
+        state = load_trading_state()
+        
+        if state.get("manual_pause", False):
+            return False, "Trading manually paused"
+        
+        if not is_within_trading_hours():
+            now = datetime.now(timezone('UTC'))
+            current_hour = now.hour
+            start_hour = state.get("start_hour", 18)
+            end_hour = state.get("end_hour", 23)
+            return False, f"Outside trading hours ({start_hour}:00 - {end_hour}:00 UTC). Current: {current_hour}:00 UTC"
+        
+        return True, None
+    except Exception as e:
+        logger.error(f"Error checking if trading is allowed: {e}")
+        return True, None  # Default to allowing trading if there's an error
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    try:
+        return render_template('index.html')
+    except Exception as e:
+        logger.error(f"Error rendering index: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/signal', methods=['GET'])
 def signal():
@@ -158,7 +186,7 @@ def signal():
         return jsonify(response_data)
 
     except Exception as e:
-        print(f"An error occurred in /signal route: {e}")
+        logger.error(f"An error occurred in /signal route: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -205,20 +233,28 @@ def chart_data():
         })
 
     except Exception as e:
-        print(f"Error in /chart-data route: {e}")
+        logger.error(f"Error in /chart-data route: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/history', methods=['GET'])
 def history():
     """Returns complete trade history"""
-    trade_history = get_trade_history()
-    return jsonify(trade_history)
+    try:
+        trade_history = get_trade_history()
+        return jsonify(trade_history)
+    except Exception as e:
+        logger.error(f"Error in /history route: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/orders', methods=['GET'])
 def orders():
     """Returns order log in reverse chronological order"""
-    order_log = get_order_log()
-    return jsonify(list(reversed(order_log)))
+    try:
+        order_log = get_order_log()
+        return jsonify(list(reversed(order_log)))
+    except Exception as e:
+        logger.error(f"Error in /orders route: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/status', methods=['GET'])
 def status():
@@ -251,7 +287,7 @@ def status():
         return jsonify(status_data)
     
     except Exception as e:
-        print(f"Error in /status route: {e}")
+        logger.error(f"Error in /status route: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -259,17 +295,18 @@ def status():
 @app.route('/risk-config', methods=['GET', 'POST'])
 def risk_config():
     """Get or update risk management configuration"""
-    if request.method == 'GET':
-        config = load_risk_config()
-        return jsonify(config)
-    
-    elif request.method == 'POST':
-        try:
+    try:
+        if request.method == 'GET':
+            config = load_risk_config()
+            return jsonify(config)
+        
+        elif request.method == 'POST':
             new_config = request.json
             save_risk_config(new_config)
             return jsonify({"success": True, "message": "Risk configuration updated"})
-        except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error in /risk-config route: {e}")
+        return jsonify({"success": False, "error": str(e)}), 400
 
 @app.route('/risk-status', methods=['GET'])
 def risk_status_endpoint():
@@ -278,25 +315,28 @@ def risk_status_endpoint():
         status = get_risk_status()
         return jsonify(status)
     except Exception as e:
-        print(f"Error in /risk-status route: {e}")
+        logger.error(f"Error in /risk-status route: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/trading-control', methods=['GET', 'POST'])
 def trading_control():
     """Get or update trading control (pause/resume, hours)"""
-    if request.method == 'GET':
-        state = load_trading_state()
-        allowed, reason = is_trading_allowed()
+    try:
+        if request.method == 'GET':
+            state = load_trading_state()
+            allowed, reason = is_trading_allowed()
+            
+            # Get current time in UTC
+            now = datetime.now(timezone('UTC'))
+            
+            return jsonify({
+                "state": state,
+                "trading_allowed": allowed,
+                "pause_reason": reason,
+                "current_time": now.strftime("%H:%M:%S UTC")
+            })
         
-        return jsonify({
-            "state": state,
-            "trading_allowed": allowed,
-            "pause_reason": reason,
-            "current_time": datetime.now().strftime("%H:%M:%S")
-        })
-    
-    elif request.method == 'POST':
-        try:
+        elif request.method == 'POST':
             action = request.json.get("action")
             
             if action == "pause":
@@ -322,14 +362,19 @@ def trading_control():
             else:
                 return jsonify({"success": False, "error": "Invalid action"}), 400
                 
-        except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error in /trading-control route: {e}")
+        return jsonify({"success": False, "error": str(e)}), 400
 
 if __name__ == '__main__':
     print("\n" + "="*60)
     print("🚀 UT Bot Trading System with Risk Management Started")
     print("="*60)
-    print("📊 Dashboard: http://localhost:5000")
+    
+    # Use the PORT environment variable provided by Render
+    port = int(os.environ.get('PORT', 5000))
+    
+    print(f"📊 Dashboard: http://localhost:{port}")
     print("📈 Chart Data: /chart-data")
     print("⚙️  Risk Config: /risk-config")
     print("📉 Risk Status: /risk-status")
@@ -338,7 +383,7 @@ if __name__ == '__main__':
     
     state = load_trading_state()
     if state.get("enabled", True):
-        print(f"⏰ Trading Hours: {state.get('start_hour', 18)}:00 - {state.get('end_hour', 23)}:00")
+        print(f"⏰ Trading Hours (UTC): {state.get('start_hour', 18)}:00 - {state.get('end_hour', 23)}:00")
     else:
         print("⏰ Trading Hours: Disabled (24/7 trading)")
     
@@ -349,4 +394,5 @@ if __name__ == '__main__':
     
     print("="*60 + "\n")
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Don't use debug=True in production
+    app.run(host='0.0.0.0', port=port, debug=False)
