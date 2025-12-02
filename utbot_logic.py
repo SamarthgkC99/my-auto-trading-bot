@@ -694,3 +694,18 @@ def get_utbot_signal():
             "utbot_stop": 0,
             "data_source": "Error"
         }
+
+def determine_data_source(df):
+    """Try to determine data source based on data characteristics."""
+    if df.empty:
+        return "None"
+    
+    try:
+        # Since we're only using Binance, always return Binance
+        # unless it's clearly mock data
+        if len(df) == 350 and df["time"].iloc[0] % 300000 == 0:  # 5-minute intervals
+            return "Binance"
+        else:
+            return "Mock"
+    except:
+        return "Unknown"
