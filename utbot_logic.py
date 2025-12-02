@@ -1,27 +1,38 @@
-# utbot_logic.py - Complete
+# utbot_logic.py - Complete with better error handling
 
 import pandas as pd
 import requests
+import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 def fetch_btc_data():
     """Fetches the latest 5-minute Kline data for BTCUSDT from Binance."""
-    try:
-        url = "https://api.binance.com/api/v3/klines"
-        params = {"symbol": "BTCUSDT", "interval": "5m", "limit": 350}
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        
-        df = pd.DataFrame(data, columns=[
-            "time", "open", "high", "low", "close", "volume", 
-            "c", "q", "n", "t", "v", "ignore"
-        ])
-        for col in ["close", "high", "low", "open"]:
-            df[col] = df[col].astype(float)
-        return df
-    except Exception as e:
-        print("Error fetching data:", e)
-        return pd.DataFrame()
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            url = "https://api.binance.com/api/v3/klines"
+            params = {"symbol": "BTCUSDT", "interval": "5m", "limit": 350}
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            df = pd.DataFrame(data, columns=[
+                "time", "open", "high", "low", "close", "volume", 
+                "c", "q", "n", "t", "v", "ignore"
+            ])
+            for col in ["close", "high", "low", "open"]:
+                df[col] = df[col].astype(float)
+            return df
+        except Exception as e:
+            logger.error(f"Error fetching data (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+    
+    return pd.DataFrame()
 
 def calc_utbot(df, keyvalue, atr_period):
     """Calculates the UT Bot trailing stop and signals."""
@@ -62,16 +73,23 @@ def calc_utbot(df, keyvalue, atr_period):
 
 def get_current_price():
     """Fetches only the current price for BTCUSDT."""
-    try:
-        url = "https://api.binance.com/api/v3/ticker/price"
-        params = {"symbol": "BTCUSDT"}
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        return float(data['price'])
-    except Exception as e:
-        print("Error fetching current price:", e)
-        return None
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            params = {"symbol": "BTCUSDT"}
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            return float(data['price'])
+        except Exception as e:
+            logger.error(f"Error fetching current price (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+    
+    return None
 
 def calculate_atr_stable(df, period=14):
     """Calculate a stable ATR for risk management"""
@@ -88,7 +106,7 @@ def get_utbot_signal():
     """Generates the final UT Bot signal with ATR and stop values"""
     df = fetch_btc_data()
     if df.empty:
-        print("No data fetched from Binance!")
+        logger.error("No data fetched from Binance!")
         return {
             "signal": "No Data", 
             "price": 0, 
@@ -112,7 +130,7 @@ def get_utbot_signal():
     
     if atr_stable is None or pd.isna(atr_stable):
         atr_stable = 0
-        print("Warning: ATR calculation returned None, defaulting to 0")
+        logger.warning("ATR calculation returned None, defaulting to 0")
 
     print(f"\n{'='*70}")
     print(f"BTCUSDT: ${latest_price:.2f}")
